@@ -57,6 +57,24 @@ io.on("connection", (socket: Socket) => {
   // For now, assume username is passed with create/join
 
   socket.on(
+    "get-lobbies",
+    (callback: (lobbies: { id: string; playerCount: number }[]) => void) => {
+      const availableLobbies = [];
+      for (const [roomId, room] of rooms.entries()) {
+        // Only list non-empty and non-full rooms (assuming max 2 for now)
+        if (room.users.length > 0 && room.users.length < 2) {
+          availableLobbies.push({ id: roomId, playerCount: room.users.length });
+        }
+        if (availableLobbies.length >= 5) {
+          // Limit to 5 lobbies
+          break;
+        }
+      }
+      callback(availableLobbies);
+    }
+  );
+
+  socket.on(
     "create-room",
     (
       username: string,
@@ -94,6 +112,7 @@ io.on("connection", (socket: Socket) => {
       );
       callback({ success: true, roomId: roomId }); // Send room ID back to creator
       emitRoomUpdate(roomId); // Emit initial room state
+      io.emit("lobbies-updated"); // Notify all clients that lobby list might have changed
     }
   );
 
@@ -148,6 +167,7 @@ io.on("connection", (socket: Socket) => {
       socket.to(roomId).emit("user-joined", newUser);
       callback({ success: true, roomId: roomId }); // Confirm join to the user
       emitRoomUpdate(roomId); // Emit updated room state to everyone
+      io.emit("lobbies-updated"); // Notify all clients that lobby list might have changed
     }
   );
 
@@ -187,10 +207,12 @@ io.on("connection", (socket: Socket) => {
     if (user) {
       // Find which room the user was in
       let userRoomId: string | null = null;
+      let lobbyListChanged = false; // Flag to check if lobby list needs update
       for (const [roomId, room] of rooms.entries()) {
         const userIndex = room.users.findIndex((u) => u.id === socket.id);
         if (userIndex !== -1) {
           userRoomId = roomId;
+          const wasRoomFull = room.users.length === 2; // Check if room was full before user left
           room.users.splice(userIndex, 1);
           console.log(`User ${user.username} removed from room ${roomId}`);
           // Notify remaining users in the room
@@ -199,13 +221,21 @@ io.on("connection", (socket: Socket) => {
           if (room.users.length === 0) {
             rooms.delete(roomId);
             console.log(`Room ${roomId} deleted as it became empty.`);
+            lobbyListChanged = true; // Room deleted
           } else {
             emitRoomUpdate(roomId); // Notify remaining users
+            if (wasRoomFull) {
+              // If room was full, it might be available now
+              lobbyListChanged = true;
+            }
           }
           break; // User found, no need to check other rooms
         }
       }
       users.delete(socket.id); // Remove user from global user map
+      if (lobbyListChanged) {
+        io.emit("lobbies-updated"); // Notify clients if a room became available or was deleted
+      }
     }
   });
 });
