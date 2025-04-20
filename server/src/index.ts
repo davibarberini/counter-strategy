@@ -105,6 +105,9 @@ io.on("connection", (socket: Socket) => {
 
       rooms.set(roomId, newRoom);
       users.set(socket.id, newUser);
+      console.log(
+        `[Server Log] Added user ${newUser.username} (${socket.id}) to users map.`
+      );
       socket.join(roomId);
 
       console.log(
@@ -160,11 +163,12 @@ io.on("connection", (socket: Socket) => {
       }; // Initialize ready to false
       room.users.push(newUser);
       users.set(socket.id, newUser);
+      console.log(
+        `[Server Log] Added user ${newUser.username} (${socket.id}) to users map.`
+      );
       socket.join(roomId);
 
       console.log(`User ${username} (${socket.id}) joined room ${roomId}`);
-      // Notify others in the room
-      socket.to(roomId).emit("user-joined", newUser);
       callback({ success: true, roomId: roomId }); // Confirm join to the user
       emitRoomUpdate(roomId); // Emit updated room state to everyone
       io.emit("lobbies-updated"); // Notify all clients that lobby list might have changed
@@ -202,40 +206,68 @@ io.on("connection", (socket: Socket) => {
   );
 
   socket.on("disconnect", () => {
-    console.log("user disconnected:", socket.id);
+    console.log("[Server Log] disconnect event for socket:", socket.id);
     const user = users.get(socket.id);
     if (user) {
-      // Find which room the user was in
       let userRoomId: string | null = null;
-      let lobbyListChanged = false; // Flag to check if lobby list needs update
+      let lobbyListChanged = false;
       for (const [roomId, room] of rooms.entries()) {
         const userIndex = room.users.findIndex((u) => u.id === socket.id);
         if (userIndex !== -1) {
           userRoomId = roomId;
-          const wasRoomFull = room.users.length === 2; // Check if room was full before user left
+          const wasRoomFull = room.users.length === 2;
           room.users.splice(userIndex, 1);
-          console.log(`User ${user.username} removed from room ${roomId}`);
-          // Notify remaining users in the room
-          socket.to(roomId).emit("user-left", user.username);
-          // If room becomes empty, delete it (optional)
+          console.log(
+            `[Server Log] User ${user.username} removed from room ${roomId}`
+          );
           if (room.users.length === 0) {
             rooms.delete(roomId);
-            console.log(`Room ${roomId} deleted as it became empty.`);
-            lobbyListChanged = true; // Room deleted
+            console.log(
+              `[Server Log] Room ${roomId} deleted as it became empty.`
+            );
+            lobbyListChanged = true;
           } else {
-            emitRoomUpdate(roomId); // Notify remaining users
+            console.log(
+              `[Server Log] Emitting room-update to room ${roomId} (remaining users: ${room.users.length})`
+            );
+            emitRoomUpdate(roomId);
             if (wasRoomFull) {
-              // If room was full, it might be available now
               lobbyListChanged = true;
             }
           }
-          break; // User found, no need to check other rooms
+          break;
         }
       }
-      users.delete(socket.id); // Remove user from global user map
+      users.delete(socket.id);
       if (lobbyListChanged) {
-        io.emit("lobbies-updated"); // Notify clients if a room became available or was deleted
+        console.log(
+          "[Server Log] Emitting lobbies-updated due to disconnect changes."
+        );
+        io.emit("lobbies-updated");
       }
+    } else {
+      console.log(
+        `[Server Log] Disconnected user ${socket.id} was not found in users map.`
+      );
+    }
+  });
+
+  // --- Get Specific Room State ---
+  socket.on("get-room-state", (roomId: string) => {
+    const room = rooms.get(roomId);
+    if (room && room.users.some((user) => user.id === socket.id)) {
+      // Ensure requester is in the room
+      console.log(
+        `[Server Log] Sending specific room state for ${roomId} to ${socket.id}`
+      );
+      // Emit back directly to the requesting socket using the new event name
+      socket.emit("specific-room-update", room);
+    } else {
+      console.log(
+        `[Server Log] Denied get-room-state for ${roomId} from ${socket.id} (not found or not in room)`
+      );
+      // Optionally emit an error back to the client
+      // socket.emit('error-message', 'Could not retrieve room state.');
     }
   });
 });
