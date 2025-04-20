@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { useSocket } from "../hooks/useSocket";
+import { useSocketContext } from "../context/SocketContext";
 import {
   Container,
   Typography,
@@ -24,6 +24,7 @@ import {
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"; // Ready icon
 import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked"; // Not ready icon
 import RefreshIcon from "@mui/icons-material/Refresh"; // Refresh icon
+import { GameScene } from "./GameScene"; // Import the new component
 
 // Define a dark theme (can be customized further)
 const darkTheme = createTheme({
@@ -109,13 +110,14 @@ const darkTheme = createTheme({
   },
 });
 
-interface User {
+// Export interfaces for use in other components
+export interface User {
   id: string;
   username: string;
   ready: boolean;
 }
 
-interface Room {
+export interface Room {
   id: string;
   users: User[];
 }
@@ -139,7 +141,7 @@ interface ToggleReadyResponse {
 const USERNAME_STORAGE_KEY = "combatStrategyUsername";
 
 export const Lobby: React.FC = () => {
-  const { socket, isConnected } = useSocket();
+  const { socket, isConnected } = useSocketContext();
   // Load initial username from localStorage
   const [username, setUsername] = useState(
     () => localStorage.getItem(USERNAME_STORAGE_KEY) || ""
@@ -152,6 +154,7 @@ export const Lobby: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingLobbies, setIsLoadingLobbies] = useState(false);
   const [isTogglingReady, setIsTogglingReady] = useState(false);
+  const [gameStarted, setGameStarted] = useState(false); // State for game start
 
   // --- LocalStorage Effect ---
   useEffect(() => {
@@ -175,21 +178,52 @@ export const Lobby: React.FC = () => {
     });
   }, [socket, isConnected]);
 
+  // Define handleLobbiesUpdated outside useEffect, wrapped in useCallback
+  const handleLobbiesUpdated = useCallback(() => {
+    console.log("[Client Log] Lobbies updated signal received.");
+    // Always refetch lobbies
+    fetchLobbies();
+    // If currently in a room, explicitly ask for its state
+    if (socket && joinedRoomId) {
+      console.log(
+        `[Client Log] In room ${joinedRoomId}, requesting specific update.`
+      );
+      socket.emit("get-room-state", joinedRoomId);
+    }
+  }, [socket, joinedRoomId, fetchLobbies]);
+
   useEffect(() => {
     if (!socket) return;
 
     const handleRoomUpdate = (updatedRoom: Room) => {
-      console.log("Room update received:", updatedRoom);
+      console.log(
+        "[Client Log] Received room-update:",
+        JSON.stringify(updatedRoom)
+      );
       setRoomState(updatedRoom);
+      setRoomState((currentState) => {
+        console.log(
+          "[Client Log] roomState updated to:",
+          JSON.stringify(currentState)
+        );
+        return currentState;
+      });
     };
 
-    const handleLobbiesUpdated = () => {
-      console.log("Lobby list updated signal received, refetching...");
-      fetchLobbies(); // Refetch lobby list
+    const handleStartGame = (finalRoomState: Room) => {
+      console.log(
+        "[Client Log] Start game signal received! Room:",
+        finalRoomState
+      );
+      setRoomState(finalRoomState); // Ensure state is final
+      setGameStarted(true);
     };
 
+    // Setup listeners
     socket.on("room-update", handleRoomUpdate);
-    socket.on("lobbies-updated", handleLobbiesUpdated); // Listen for server signal
+    socket.on("lobbies-updated", handleLobbiesUpdated);
+    socket.on("specific-room-update", handleRoomUpdate);
+    socket.on("start-game", handleStartGame); // Add listener for game start
 
     // Fetch initial lobby list when connected
     if (isConnected) {
@@ -197,10 +231,13 @@ export const Lobby: React.FC = () => {
     }
 
     return () => {
+      // Clean up listeners
       socket.off("room-update", handleRoomUpdate);
       socket.off("lobbies-updated", handleLobbiesUpdated);
+      socket.off("specific-room-update", handleRoomUpdate);
+      socket.off("start-game", handleStartGame); // Clean up game start listener
     };
-  }, [socket, isConnected, fetchLobbies]);
+  }, [socket, isConnected, fetchLobbies, handleLobbiesUpdated]); // Add handleLobbiesUpdated to dependency array
 
   // Clear error on input change
   useEffect(() => {
@@ -287,8 +324,24 @@ export const Lobby: React.FC = () => {
 
   const currentUser = roomState?.users.find((user) => user.id === socket?.id);
 
-  // --- Render Joined Room View ---
+  // --- Conditional Rendering ---
+
+  // Render Game Scene if started
+  if (gameStarted && roomState && currentUser) {
+    return (
+      <ThemeProvider theme={darkTheme}>
+        <CssBaseline />
+        <GameScene room={roomState} currentUser={currentUser} />
+      </ThemeProvider>
+    );
+  }
+
+  // Render Joined Room View if in room but game not started
   if (joinedRoomId && roomState) {
+    console.log(
+      "[Client Log] Rendering Joined Room View with roomState:",
+      JSON.stringify(roomState)
+    );
     return (
       <ThemeProvider theme={darkTheme}>
         <CssBaseline />
@@ -392,7 +445,7 @@ export const Lobby: React.FC = () => {
     );
   }
 
-  // --- Render Lobby Form View ---
+  // Render Lobby Form View otherwise
   return (
     <ThemeProvider theme={darkTheme}>
       <CssBaseline />

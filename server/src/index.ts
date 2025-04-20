@@ -184,23 +184,43 @@ io.on("connection", (socket: Socket) => {
       }
 
       let userRoomId: string | null = null;
-      // Find the user in a room and toggle their status
+      let roomToUpdate: Room | null = null; // Store the room reference
+
       for (const [roomId, room] of rooms.entries()) {
         const userInRoom = room.users.find((u) => u.id === socket.id);
         if (userInRoom) {
           userRoomId = roomId;
-          userInRoom.ready = !userInRoom.ready; // Toggle ready state
+          roomToUpdate = room; // Found the room
+          userInRoom.ready = !userInRoom.ready;
           console.log(
             `User ${user.username} (${socket.id}) ready status in room ${roomId}: ${userInRoom.ready}`
           );
-          emitRoomUpdate(roomId); // Notify everyone in the room about the change
+          emitRoomUpdate(roomId);
           callback({ success: true });
           break;
         }
       }
 
-      if (!userRoomId) {
-        callback({ success: false, error: "User not found in any room." });
+      if (!userRoomId || !roomToUpdate) {
+        return callback({
+          success: false,
+          error: "User not found in any room.",
+        });
+      }
+
+      // --- Check if game can start ---
+      // Check if room has enough players (e.g., 2) and everyone is ready
+      const canStart =
+        roomToUpdate.users.length === 2 &&
+        roomToUpdate.users.every((u) => u.ready);
+
+      if (canStart) {
+        console.log(
+          `[Server Log] All players ready in room ${userRoomId}. Starting game...`
+        );
+        io.to(userRoomId).emit("start-game", roomToUpdate); // Send final room state with start signal
+        // Consider marking the room as "in-game" or removing it from lobby list logic later
+        io.emit("lobbies-updated"); // Room is now full/in-game, update lobby list
       }
     }
   );
@@ -270,6 +290,40 @@ io.on("connection", (socket: Socket) => {
       // socket.emit('error-message', 'Could not retrieve room state.');
     }
   });
+
+  // --- Chat Messaging ---
+  socket.on(
+    "send-message",
+    (data: { roomId: string; message: string; username: string }) => {
+      const { roomId, message, username } = data;
+      // Basic validation
+      if (!roomId || !message || !username) {
+        console.log("[Server Log] Invalid send-message data received from");
+        return; // Ignore invalid messages
+      }
+
+      // Ensure sender is actually in the room they claim (optional but good practice)
+      const room = rooms.get(roomId);
+      if (!room || !room.users.some((user) => user.id === socket.id)) {
+        console.log(
+          `[Server Log] User ${socket.id} tried to send message to room ${roomId} they are not in.`
+        );
+        return;
+      }
+
+      console.log(
+        `[Server Log] Message received from ${username} in room ${roomId}: ${message}`
+      );
+      const messageData = {
+        username: username,
+        message: message.trim(), // Trim message
+        timestamp: Date.now(),
+      };
+      // Broadcast the message to everyone in the room (including sender)
+      console.log(`[Server Log] Broadcasting 'new-message' to room ${roomId}`);
+      io.to(roomId).emit("new-message", messageData);
+    }
+  );
 });
 
 server.listen(PORT, () => {
